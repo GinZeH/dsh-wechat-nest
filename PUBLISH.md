@@ -144,30 +144,14 @@ git push origin main --tags
 
 ### 3. 自动验证与发布
 
-推送 tag 后，GitHub Actions 自动触发 `.github/workflows/release.yml`，依赖链是 `verify → release → publish-npm`：
+依赖链为 bundle → release → publish-npm。发布 tag、release/v<版本> 分支或手动运行工作流均可触发；普通 main 推送只运行 CI。
 
-1. **`verify`** — 在**该 tag 指向的提交上**自己跑 `npm ci` / `npm run build` / `npm test`，并校验 tag 与 `package.json` 的 `version` 一致。不一致就在这里失败，此时**还没有**创建任何 Release 或 npm 版本，删掉 tag 重打即可，无副作用。
-2. **`release`** — 从 CHANGELOG 抽取该版本段落，创建 GitHub Release。抽不到该版本段落会失败。
-3. **`publish-npm`** — `npm ci` → `npm publish`（`prepublishOnly` 已内置 build + test 双保险，工作流不再重复 build）。
+1. **bundle**：校验版本，在当前提交上安装依赖、执行测试、构建并验证预编译安装包。
+2. **release**：按 CHANGELOG 创建 GitHub Release，并附上同一个 .tgz bundle 和 SHA256SUMS。已存在的 tag 必须指向当前提交。
+3. **publish-npm**：下载该 bundle，发布同一份文件；已有版本必须具有完全一致的 SHA-512。
 
-> **为什么不再轮询 CI**：早期版本有个 `ci-green` job，用 `gh api` 轮询该提交的 CI 结论最多 5 分钟。它有两个无法修复的缺陷：`ci.yml` 只在 `push: branches: [main]` 触发，**单独推 tag 时根本没有 CI 可等**（必然超时）；而 `main` 与 tag 同时推时，CI 与轮询同时启动，一次 7m35s 的慢跑就会耗尽预算、拦下整个发布，只能手工重跑。现在 `verify` 在 tag 提交上原地验证，没有需要等待的对象。
+`publish-npm` 等的是 `release`；Release 创建失败不会发布 npm。npm 失败不影响已生成 bundle 的安装，完成授权后重跑失败任务即可，无需移动 tag。
 
-> **`publish-npm` 等的是 `release`，不是 `verify`**。这是有意的：Release 创建失败（CHANGELOG 缺段落、API 抖动）时 npm 必须**不发**，否则两个产物会漂移。
-
-> **前置条件**：在仓库 Settings → Secrets and variables → Actions 中配置 `DSH_WECHAT_NEST_NPM_TOKEN` secret，使用你自己的 npm 发布账号生成、具备 `dsh-wechat-nest` 发布权限的有效凭据。名字必须与 `release.yml` 里 `NODE_AUTH_TOKEN: ${{ secrets.DSH_WECHAT_NEST_NPM_TOKEN }}` 一致，否则发布这一步会认证失败。
-
-> **npm 单独启用**：默认只发布 GitHub Release，`publish-npm` 会跳过。准备发布 npm 时，再把仓库 Actions variable `NPM_PUBLISH_ENABLED` 设为 `true`，并配置上述凭据；公开 GitHub 仓库不需要提供 npm 凭据。
-
-> **发布后核对**：npm 提示「Your package is being processed」后通常要等 1–3 分钟才可查。用 `npm view dsh-wechat-nest version` 确认 `latest` 已指向新版本——`publish-npm` 显示成功只代表上传完成，registry 生效有延迟。
-
-### 失败时怎么办
-
-| 失败点 | 后果 | 处理 |
-|---|---|---|
-| `verify` 红（测试或 tag/版本不一致） | 无 Release、无 npm 版本 | 修好、删 tag 重打（`git tag -d vX.Y.Z && git push origin :refs/tags/vX.Y.Z`，再 `git tag vX.Y.Z && git push origin vX.Y.Z`） |
-| `release` 红（CHANGELOG 缺该版本段落） | 无 npm 版本 | 补 CHANGELOG 后重打 tag |
-| `publish-npm` 红 | Release 已存在、npm 没有 | `gh run rerun <run-id>` 重跑即可，**不需要**重打 tag |
-
-> 重打 tag 的前提是 npm 上**还没有**这个版本，先 `npm view dsh-wechat-nest@X.Y.Z version` 确认 404。
+首次发布需要 npm 账号；推荐后续使用 Trusted Publishing，工作流已启用 OIDC。也支持仓库 secret `DSH_WECHAT_NEST_NPM_TOKEN`，不再需要 NPM_PUBLISH_ENABLED 变量。授权字段、首次发布与恢复方法见 [发布说明](docs/PUBLISHING.md)。
 
 ---

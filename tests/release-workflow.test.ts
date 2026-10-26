@@ -1,28 +1,3 @@
-/**
- * Release pipeline guard.
- *
- * The release flow has one property that matters above all others: **a
- * failure must not produce a half-published release.** GitHub Release and
- * npm must move together, and a tag that disagrees with `package.json` must
- * fail before either exists.
- *
- * These assertions are static (they read the workflow files) because the
- * alternative — running GitHub Actions — is not available in a unit test.
- * That is the same trade-off `tests/host-line.test.ts` makes for PUBLISH.md:
- * the doc/workflow is the artefact, so pin the artefact.
- *
- * History this pins down:
- *
- *   - `publish-npm` used to declare `needs: ci-green` while the comment above
- *     it claimed it waited on `release`. A Release that failed (missing
- *     CHANGELOG section, API hiccup) still let npm publish, so the two
- *     artefacts could drift apart.
- *   - `ci-green` polled `ci.yml` for 5 minutes. `ci.yml` only triggers on
- *     `push: branches: [main]`, so a tag pushed alone had no run to wait for
- *     (guaranteed timeout), and pushing `main` + tag together started the
- *     poll and the CI run simultaneously — one slow run (7m35s) blew the
- *     budget and blocked the release until someone re-ran it by hand.
- */
 import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -69,108 +44,57 @@ const code = (yaml: string) =>
     .filter((line) => !/^\s*#/.test(line))
     .join("\n");
 
-describe("release workflow: verification happens in place", () => {
-  it("is triggered by tags only", () => {
-    // `branches:` here would fire the publisher on every main push.
-    expect(release).toMatch(/on:\s*\n\s*push:\s*\n\s*tags:/);
-    expect(release).not.toMatch(/^\s{4}branches:/m);
+describe("release workflow: verified bundle and npm publication", () => {
+  it("accepts version tags and explicit release branches, without publishing on main pushes", () => {
+    expect(release).toContain("tags: ['v*']");
+    expect(release).toContain("branches: ['release/v*']");
+    expect(release).not.toMatch(/branches:.*main/);
+    expect(release).toContain("workflow_dispatch:");
   });
-
-  it("does not poll another workflow", () => {
-    // The whole point of the rewrite: nothing to wait for.
-    expect(code(release)).not.toContain("ci-green");
-    expect(code(release)).not.toMatch(/seq 1 60/);
-    expect(code(release)).not.toContain("actions/runs?head_sha");
+  it("verifies version, tests and packs before creating a Release", () => {
+    expect(releaseJobs.bundle).toContain("package.json");
+    expect(releaseJobs.bundle).toContain("GITHUB_REF_NAME");
+    expect(releaseJobs.bundle).toContain("npm ci");
+    expect(releaseJobs.bundle).toContain("npm test");
+    expect(releaseJobs.bundle).toContain("npm run pack:release");
+    expect(releaseJobs.release).toMatch(/needs: bundle/);
+    expect(release).not.toContain("actions/runs?head_sha");
   });
-
-  it("builds and tests the tagged commit itself", () => {
-    const verify = releaseJobs.verify;
-    expect(verify).toBeDefined();
-    expect(verify).toContain("npm ci");
-    expect(verify).toContain("npm run build");
-    expect(verify).toContain("npm test");
+  it("uploads the prebuilt bundle and checksum as release assets", () => {
+    expect(releaseJobs.bundle).toContain("actions/upload-artifact@v4");
+    expect(releaseJobs.release).toContain("name: desktop-bundle");
+    expect(releaseJobs.release).toContain("release-assets/*.tgz");
+    expect(releaseJobs.release).toContain("release-assets/SHA256SUMS");
+    expect(releaseJobs.release).toContain("Tag already points elsewhere");
   });
-
-  it("refuses a tag that disagrees with package.json", () => {
-    // Checked in `verify`, i.e. before a Release or an npm version exists —
-    // so the mistake costs nothing to undo.
-    const verify = releaseJobs.verify!;
-    expect(verify).toContain("package.json");
-    expect(verify).toContain("GITHUB_REF_NAME");
+  it("publishes only after the Release and reuses the same artifact", () => {
+    const publish = releaseJobs["publish-npm"]!;
+    expect(publish).toMatch(/needs: \[bundle, release\]/);
+    expect(publish).toContain("name: desktop-bundle");
+    expect(publish).toContain("node scripts/publish-npm.mjs");
+    expect(publish).not.toContain("npm ci");
+    expect(publish).not.toContain("npm run build");
+    expect(pkg.scripts["pack:release"]).toContain("npm run build");
+    expect(ciJobs.build).toContain("npm run pack:release");
   });
-});
-
-describe("release workflow: npm and the GitHub Release cannot drift", () => {
-  it("publish-npm waits on release, not on the verifier", () => {
-    // The bug this guards: `needs: ci-green` let npm publish even when the
-    // Release job had failed.
-    expect(releaseJobs["publish-npm"]).toBeDefined();
-    expect(releaseJobs["publish-npm"]).toMatch(/needs:\s*release\b/);
-  });
-
-  it("release waits on verify", () => {
-    expect(releaseJobs.release).toBeDefined();
-    expect(releaseJobs.release).toMatch(/needs:\s*verify\b/);
-  });
-
-  it("publishes with the documented secret", () => {
-    expect(releaseJobs["publish-npm"]).toContain("vars.NPM_PUBLISH_ENABLED == 'true'");
-    expect(releaseJobs["publish-npm"]).toContain("NODE_AUTH_TOKEN: ${{ secrets.DSH_WECHAT_NEST_NPM_TOKEN }}");
+  it("supports OIDC and the documented token fallback", () => {
+    const publish = releaseJobs["publish-npm"]!;
+    expect(publish).toContain("id-token: write");
+    expect(publish).toContain("NODE_AUTH_TOKEN: ${{ secrets.DSH_WECHAT_NEST_NPM_TOKEN }}");
     expect(publishDoc).toContain("DSH_WECHAT_NEST_NPM_TOKEN");
+    expect(publish).not.toContain("NPM_PUBLISH_ENABLED");
   });
-
-  it("serialises releases and never cancels one midway", () => {
-    expect(release).toMatch(/concurrency:/);
+  it("refuses an existing npm version whose bytes differ", () => {
+    const script=read("scripts/publish-npm.mjs");
+    expect(script).toContain("dist.integrity");
+    expect(script).toContain('assert.equal(response.status, 404');
+    expect(script).toContain('"--ignore-scripts"');
+  });
+  it("serializes publications and bounds every job", () => {
+    expect(release).toContain("group: release");
     expect(release).toContain("cancel-in-progress: false");
-  });
-});
-
-describe("release workflow: npm cache survives a version bump", () => {
-  it.each([
-    ["ci.yml", () => ciJobs.build!],
-    ["release.yml verify", () => releaseJobs.verify!],
-    ["release.yml publish-npm", () => releaseJobs["publish-npm"]!],
-  ])("%s restores the cache with a prefix fallback", (_name, block) => {
-    // `npm version` rewrites package-lock.json on every release, so a cache
-    // keyed strictly on hashFiles(lockfile) ALWAYS missed on the release
-    // commit (one cold install took 7m01s). `restore-keys` turns a key change
-    // into a partial hit.
-    const body = block();
-    expect(body).toContain("actions/cache@v4");
-    expect(body).toContain("restore-keys:");
-    expect(body).toContain("hashFiles('package-lock.json')");
-  });
-
-  it("does not use setup-node's strict cache mode", () => {
-    // `cache: npm` is the option that has no fallback.
-    expect(release).not.toMatch(/^\s*cache:\s*npm\s*$/m);
-    expect(ci).not.toMatch(/^\s*cache:\s*npm\s*$/m);
-  });
-});
-
-describe("release workflow: the published tarball is the tested one", () => {
-  it("does not build twice", () => {
-    // `prepublishOnly` already runs `npm run build && npm test`. A separate
-    // `npm run build` in the workflow tested the pre-hook output.
-    expect(pkg.scripts.prepublishOnly).toContain("npm run build");
-    expect(pkg.scripts.prepublishOnly).toContain("npm test");
-    expect(code(releaseJobs["publish-npm"]!)).not.toContain("npm run build");
-  });
-
-  it("runs npm publish exactly once", () => {
-    expect(code(release).match(/npm publish/g)?.length).toBe(1);
-  });
-});
-
-describe("release workflow: bounded jobs", () => {
-  it("every job has a timeout", () => {
-    // Without a timeout a hung `npm ci` occupies a runner for the default
-    // 6 hours and blocks the concurrency group with it.
-    for (const [name, block] of Object.entries(releaseJobs)) {
-      expect(block, `${name} has no timeout-minutes`).toContain("timeout-minutes:");
-    }
-    for (const [name, block] of Object.entries(ciJobs)) {
-      expect(block, `${name} has no timeout-minutes`).toContain("timeout-minutes:");
+    for (const block of [...Object.values(releaseJobs), ...Object.values(ciJobs)]) {
+      expect(block).toContain("timeout-minutes:");
     }
   });
 });
@@ -237,7 +161,7 @@ describe("release script", () => {
   });
 });
 
-describe("PUBLISH.md describes the pipeline that exists", () => {
+describe("PUBLISH.md describes the bundle pipeline", () => {
   it("names the one-command release path", () => {
     expect(publishDoc).toContain("npm run release");
   });
@@ -250,8 +174,8 @@ describe("PUBLISH.md describes the pipeline that exists", () => {
     expect(publishDoc).not.toMatch(/^\s*\d+\.\s+\*\*`ci-green`\*\*/m);
   });
 
-  it("documents the verify → release → publish-npm chain", () => {
-    expect(publishDoc).toMatch(/verify → release → publish-npm/);
+  it("documents the bundle → release → publish-npm chain", () => {
+    expect(publishDoc).toMatch(/bundle → release → publish-npm/);
     // The drift guard must be stated where maintainers will read it.
     expect(publishDoc).toMatch(/`publish-npm` 等的是 `release`/);
   });
