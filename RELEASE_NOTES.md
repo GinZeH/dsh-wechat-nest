@@ -23,7 +23,7 @@
 - 构建命令：`npm run build`。
 - 测试命令：`npm test`，新增 `tests/isolation-boundaries.test.ts` 的 13 条回归用例。
 - 尚未进行真实 DSH + 微信双 bot 扫码联调。
-- 首版版本号为 `0.1.0`。npm 发布单独启用，GitHub 仓库公开不代表已发布 npm。
+- 首版版本号为 `0.1.0`。GitHub Release 附带可供官方 DSH Desktop 安装的预编译 `.tgz` bundle 和 SHA-256 校验值；npm 使用同一份安装包，首次发布需要所有者完成 npm 授权。
 - 仓库、npm 包、插件入口和设置页标识：`dsh-wechat-nest`；设置页名称：微巢。
 - 路由：`/wechat-nest/*`；工具：`wechat_nest_send`；默认存储：`~/.dsh-wechat-nest`。
 - 同一微信账号应只由一个插件实例轮询；旧版迁移见 [迁移说明](docs/MIGRATION.md)。
@@ -31,4 +31,4 @@
 
 ## 发布配置
 
-GitHub Actions 发布凭据使用 `DSH_WECHAT_NEST_NPM_TOKEN`，仓库所有者需配置自己的 npm 凭据。没有沿用原作者的发布身份。
+GitHub Actions 优先使用 npm Trusted Publishing，也支持仓库 secret `DSH_WECHAT_NEST_NPM_TOKEN`。配置与首次发布见 [发布说明](docs/PUBLISHING.md)。没有沿用原作者的发布身份。

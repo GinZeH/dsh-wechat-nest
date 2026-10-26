@@ -20,13 +20,15 @@
 
 要求 DSH `>=0.2.1-0 <0.3.0-0`。
 
-当前交付源码及本地安装包，尚未发布到 npm。先按下方「开发」构建，再执行 `npm pack`，得到 `dsh-wechat-nest-0.1.0.tgz`。通过 DSH 设置 → 插件 → 添加插件，选择本地安装包，或运行：
+在 [Releases](https://github.com/GinZeH/dsh-wechat-nest/releases) 下载 `dsh-wechat-nest-0.1.0.tgz`，通过 DSH 设置 → 插件 → 添加插件选择本地安装包，或运行：
 
 ```bash
 dsh plugin --profile desktop add ./dsh-wechat-nest-0.1.0.tgz
 ```
 
-发布到 npm 后，可直接在插件页填写 `dsh-wechat-nest` 安装。原版 `dsh-wechat` 与微巢使用不同标识，但同一微信账号不能同时交给两个插件轮询；迁移时应先停用原插件。
+这个 `.tgz` 已包含编译后的服务端、设置页和 `dsh.bundle` 清单，就是官方 DSH Desktop 可安装的 bundle；不要选择 GitHub 自动生成的 Source code 压缩包。自行打包可运行 `npm run pack:release`，产物在 `release-assets/`，附带 `SHA256SUMS` 校验值。
+
+npm 首次发布尚待完成账号授权；发布后可直接在插件页填写 `dsh-wechat-nest` 安装。原版 `dsh-wechat` 与微巢使用不同标识，但同一微信账号不能同时交给两个插件轮询；迁移时应先停用原插件。
 
 安装后打开 **设置 → 微巢**。首次安装会自动创建一个 `main` bot，用要当机器人的微信扫码登录。
 

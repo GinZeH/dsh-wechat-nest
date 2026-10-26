@@ -1,117 +1,121 @@
 name: Release
 
-# A tag is the ONLY trigger. Everything the release needs is verified here,
-# on the tagged commit itself — the workflow does not poll `ci.yml` and does
-# not depend on CI having run on `main` first.
-#
-# History: this used to be a `ci-green` job that polled the CI run for the
-# same SHA for 5 minutes. That failed twice over — `ci.yml` only triggers on
-# `push: branches: [main]`, so a tag pushed on its own had NO CI run to wait
-# for (guaranteed timeout), and when `main` and the tag were pushed together
-# the CI run and the poll started simultaneously, so a slow runner queue
-# (one run took 7m35s) blew the 5-minute budget and blocked the whole
-# release. Re-running the workflow by hand was the only way out. Verifying
-# in place removes both failure modes: there is nothing to wait for.
 on:
   push:
-    tags:
-      - 'v*'
+    tags: ['v*']
+    # Allows API clients that can create branches to initiate a release.
+    branches: ['release/v*']
+  workflow_dispatch:
 
-# Two tags pushed in quick succession must not publish concurrently. The
-# group is per-tag, and an in-flight release is never cancelled midway — a
-# half-published release is worse than a queued one.
 concurrency:
-  group: release-${{ github.ref }}
+  group: release
   cancel-in-progress: false
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  # Build + test on the tagged commit, and refuse a tag that disagrees with
-  # package.json. This runs BEFORE anything is created, so a mismatch costs
-  # nothing to undo: no GitHub Release, no npm version, no tag surgery.
-  verify:
+  bundle:
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    outputs:
+      tag: ${{ steps.version.outputs.tag }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          # Pin Node 22 to match the helper module's zstd API surface; see
-          # .github/workflows/ci.yml for the rationale.
           node-version: 22
-          registry-url: 'https://registry.npmjs.org'
-      # An explicit cache with `restore-keys` rather than setup-node's
-      # `cache: npm`. That option keys strictly on `hashFiles(lockfile)`,
-      # and `npm version` rewrites package-lock.json on every release — so
-      # the release commit ALWAYS missed and cold-installed (7m01s once).
-      # The prefix fallback turns a key change into a partial hit instead.
-      - uses: actions/cache@v4
-        with:
-          path: ~/.npm
-          key: npm-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
-          restore-keys: |
-            npm-${{ runner.os }}-
-      - run: npm ci
-      - run: npm run build
-      - run: npm test
-      - name: Tag must match package.json version
+          cache: npm
+      - name: Validate release version
+        id: version
+        shell: bash
         run: |
-          pkg="$(node -p "require('./package.json').version")"
-          if [ "v$pkg" != "$GITHUB_REF_NAME" ]; then
-            echo "::error::tag $GITHUB_REF_NAME does not match package.json version $pkg"
+          tag="v$(node -p "require('./package.json').version")"
+          if [[ "$GITHUB_EVENT_NAME" != workflow_dispatch && "${GITHUB_REF_NAME#release/}" != "$tag" ]]; then
+            echo "::error::Release ref does not match package.json"
             exit 1
           fi
-          echo "tag $GITHUB_REF_NAME matches package.json ✓"
-
-  # GitHub Release notes come from CHANGELOG.md. `query` fails the job when
-  # the version section is missing, which is the intended outcome: a release
-  # with empty notes is worse than no release.
-  release:
-    needs: verify
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@v4
-      - name: Extract release notes from CHANGELOG.md
-        id: changelog
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+      - run: npm ci
+      - run: npm test
+      - run: npm run pack:release
+      - uses: actions/upload-artifact@v4
+        with:
+          name: desktop-bundle
+          path: release-assets/*
+          if-no-files-found: error
+      - name: Extract release notes
         uses: release-flow/keep-a-changelog-action@v3
+        id: changelog
         with:
           command: query
-          version: ${{ github.ref_name }}
-      - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
+          version: ${{ steps.version.outputs.tag }}
+      - run: printf '%s\n' "$RELEASE_NOTES" > release-assets/RELEASE_NOTES.md
+        env:
+          RELEASE_NOTES: ${{ steps.changelog.outputs.release-notes }}
+      - uses: actions/upload-artifact@v4
         with:
-          body: ${{ steps.changelog.outputs.release-notes }}
-          draft: false
+          name: release-notes
+          path: release-assets/RELEASE_NOTES.md
 
-  # `needs: release` — not `verify`. The previous comment claimed npm waited
-  # on the Release while the code only waited on the CI gate, so a Release
-  # that failed (missing CHANGELOG section, API hiccup) still let npm publish
-  # and the two artefacts could drift apart. The comment is now the contract.
-  publish-npm:
-    # GitHub releases do not require publishing to npm. Enable separately.
-    if: ${{ vars.NPM_PUBLISH_ENABLED == 'true' }}
-    needs: release
+  release:
+    needs: bundle
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: desktop-bundle
+          path: release-assets
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-notes
+          path: release-assets
+      - name: Refuse an existing tag on another commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          TAG: ${{ needs.bundle.outputs.tag }}
+        run: |
+          if gh api "repos/$REPO/git/ref/tags/$TAG" > tag.json 2> tag-error.txt; then
+            actual=$(node -p "JSON.parse(require('fs').readFileSync('tag.json')).object.sha")
+            test "$actual" = "$GITHUB_SHA" || { echo '::error::Tag already points elsewhere'; exit 1; }
+          elif ! grep -q 'HTTP 404' tag-error.txt; then
+            cat tag-error.txt
+            exit 1
+          fi
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.bundle.outputs.tag }}
+          target_commitish: ${{ github.sha }}
+          name: 微巢 ${{ needs.bundle.outputs.tag }}
+          body_path: release-assets/RELEASE_NOTES.md
+          fail_on_unmatched_files: true
+          files: |
+            release-assets/*.tgz
+            release-assets/SHA256SUMS
+
+  publish-npm:
+    needs: [bundle, release]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      id-token: write
+      contents: read
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-          registry-url: 'https://registry.npmjs.org'
-      - uses: actions/cache@v4
+          registry-url: https://registry.npmjs.org
+      - run: npm install --global npm@11.17.0
+      - uses: actions/download-artifact@v4
         with:
-          path: ~/.npm
-          key: npm-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
-          restore-keys: |
-            npm-${{ runner.os }}-
-      - run: npm ci
-      # No separate `npm run build`: `prepublishOnly` already runs
-      # `npm run build && npm test`, so building here duplicated it and
-      # tested the pre-hook output rather than the shipped one.
-      - run: npm publish
+          name: desktop-bundle
+          path: release-assets
+      # Publish the same bytes attached to the Release, without rebuilding.
+      - run: node scripts/publish-npm.mjs
         env:
           NODE_AUTH_TOKEN: ${{ secrets.DSH_WECHAT_NEST_NPM_TOKEN }}
