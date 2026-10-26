@@ -1,0 +1,9 @@
+dist/.tsbuildinfo
+resources/
+VALIDATION.txt
+.env*
+.npmrc
+*.pem
+*.key
+*.pfx
+pnpm-lock.yaml

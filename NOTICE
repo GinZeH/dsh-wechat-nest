@@ -1,0 +1,14 @@
+DSH WeChat Nest (微巢)
+https://github.com/GinZeH/dsh-wechat-nest
+
+Derived from pan17/dsh-wechat (MIT):
+https://github.com/pan17/dsh-wechat
+Original copyright: Copyright (c) 2026 dsh-wechat contributors
+The original MIT license is retained in LICENSE.
+
+The weixin protocol and adapter code retain their original source notices:
+https://github.com/pan17/wechat-opencode
+Original protocol source: @tencent-weixin/openclaw-weixin
+
+The bundled QR code implementation retains Kazuhiko Arase's copyright
+and MIT notice in src/vendor/qrcode.mjs.

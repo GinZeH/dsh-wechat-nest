@@ -1,0 +1,30 @@
+node_modules/
+dist/
+*.log
+*.tgz
+.DS_Store
+
+# Local credentials, runtime state and generated artifacts
+.env
+.env.*
+!.env.example
+.npmrc
+.dsh-wechat*/
+auth/
+bots/
+tempfile/
+workspaces/
+state.json
+config.json
+sync-buf.json
+audit.jsonl*
+*.pem
+*.key
+*.pfx
+*.tsbuildinfo
+*.zip
+*.sha256
+
+# Upstream screenshots contain chat/account details; keep them local only
+resources/
+pnpm-lock.yaml

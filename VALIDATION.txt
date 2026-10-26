@@ -1,0 +1,10 @@
+DSH WeChat Nest v0.1.0
+Validation date: 2026-10-26
+
+Build: passed.
+Tests: 60 test files, 1073 tests passed after final release cleanup.
+Packed runtime: package identity, entry point, client bundle and routes verified.
+Final checks are recorded in docs/RELEASE_REVIEW.md.
+
+Real DSH/WeChat login and long-running multi-bot operation have not been exercised.
+Raw machine-specific logs are intentionally excluded from publication.
